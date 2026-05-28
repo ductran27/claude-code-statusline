@@ -5,14 +5,16 @@ Personal Claude Code statusline — single-row, tight separators, muted 256-colo
 ## Format
 
 ```
-[plan-icon ⚡] [project]│[git branch + dirty/ahead/behind]│tokens/ctx│5h pct% (reset)/7d pct% (reset)│Model (ctx|EFFORT)│[output-style]
+[plan-icon ⚡] [project]│[git branch + dirty/ahead/behind]│tokens/ctx│5h pct% (reset)/7d pct% (reset)│Model (ctx|EFFORT[|FAST])│[output-style]
 ```
 
 Example:
 
 ```
-ductran│280k/1M│5h 10% (2h36m)/7d 2% (Tue 12PM)│Opus 4.7 (1M|MAX)
+ductran│280k/1M│5h 10% (2h36m)/7d 2% (Tue 12PM)│Opus 4.8 (1M|MAX)
 ```
+
+With fast mode on: `Opus 4.8 (1M|MAX|FAST)` — the `FAST` marker is appended only when active.
 
 ## Separators
 
@@ -32,14 +34,22 @@ Muted 256-color: sage 108, gold 179, terra cotta 173, brick 167, slate 103, mauv
 
 Bold reserved for the effort tier label (MAX/XHIGH/HIGH/etc.).
 
-## Effort tier
+## Effort tier & fast mode
 
-Source priority for the active tier:
+The active effort tier is read straight from the statusLine stdin JSON `.effort.level`
+(Claude Code ≥ ~2.1.154). It is **live** — reflects mid-session `/effort` and `/model`
+toggles in real time — and covers Opus 4.8's tiers `low | medium | high | xhigh | max`
+(`ultra` = ultracode). The raw value is uppercased and rendered bold
+(`xhigh` → **XHIGH**, `max` → **MAX**).
 
-1. Latest `[1m<level>[22m effort` line in the current session transcript (live `/model` toggles).
-2. `~/.claude/settings.json` → `.effortLevel` (persistent default).
+Fallback (only when `.effort.level` is absent — older builds, or models without an
+effort parameter): `~/.claude/settings.json` → `.effortLevel`. Note that `settings.json`
+cannot store `max` (session-only), so reading `.effort.level` is what makes a live **MAX**
+show up at all.
 
-Raw value is uppercased and rendered bold (`xhigh` → **XHIGH**, `max` → **MAX**).
+**Fast mode** (`/fast`) is a separate speed axis, read live from the top-level
+`.fast_mode` boolean. When active, a non-bold terra-cotta `FAST` marker is appended:
+`(1M|MAX|FAST)`. Nothing is shown when fast mode is off.
 
 ## Install
 

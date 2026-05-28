@@ -49,7 +49,7 @@ sep="${c_dim}${c_gray}│${c_reset}"
 input=$(cat)
 
 IFS='|' read -r model_id context_size used_pct project_dir output_style \
-  five_hour_pct five_hour_reset seven_day_pct seven_day_reset transcript_path \
+  five_hour_pct five_hour_reset seven_day_pct seven_day_reset effort_level fast_mode \
   <<< "$(echo "$input" | jq -r '[
     (.model.id // "unknown"),
     (.context_window.context_window_size // 0),
@@ -60,7 +60,8 @@ IFS='|' read -r model_id context_size used_pct project_dir output_style \
     (.rate_limits.five_hour.resets_at // ""),
     (if .rate_limits.seven_day.used_percentage != null then (.rate_limits.seven_day.used_percentage | ceil) else "" end),
     (.rate_limits.seven_day.resets_at // ""),
-    (.transcript_path // "")
+    (.effort.level // ""),
+    (.fast_mode // false)
   ] | join("|")')"
 
 model_id="${model_id:-unknown}"
@@ -145,35 +146,40 @@ if [[ "$model_id" =~ ([0-9]+)-([0-9]+) ]]; then
   model_version=" ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
 fi
 
-# Resolve thinking effort. Priority:
-#   1. Latest "Set model to ... with X effort" line in current session transcript
-#      (captures live /model toggles that don't write to settings.json)
-#   2. ~/.claude/settings.json effortLevel (persistent default)
-effort_level=""
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
-  # Anchor on the ANSI bold wrapper from /model output: [1mEFFORT[22m effort
-  # (chat text without ANSI codes can't accidentally match this)
-  effort_level=$(grep -aoE '\\u001b\[1m[a-z]+\\u001b\[22m effort' "$transcript_path" 2>/dev/null \
-    | tail -1 \
-    | sed -E 's/.*\[1m([a-z]+)\\u001b.*/\1/')
-fi
-if [ -z "$effort_level" ] && [ -f "$HOME/.claude/settings.json" ]; then
+# Resolve thinking effort. The statusLine stdin exposes the LIVE effort tier at
+# .effort.level (read into $effort_level above) — it reflects mid-session
+# /effort and /model toggles in real time (Opus 4.8: low | medium | high |
+# xhigh | max; "ultra" = ultracode) and is absent for models without an effort
+# parameter. This is the authoritative source, so we read it directly instead
+# of scraping the transcript (the old grep silently missed live toggles).
+# Fallback: ~/.claude/settings.json effortLevel, only for older Claude Code
+# builds that don't emit .effort. Note settings can't hold "max" (session-only
+# tier) — which is exactly why the stale-settings path could never surface a
+# live MAX. Reading .effort.level fixes that.
+if { [ -z "$effort_level" ] || [ "$effort_level" = "null" ]; } && [ -f "$HOME/.claude/settings.json" ]; then
   effort_level=$(jq -r '.effortLevel // empty' "$HOME/.claude/settings.json" 2>/dev/null)
 fi
 
-# Display the effort tier truthfully — whatever /model or settings.json says
-# (xhigh, max, high, medium, low). No normalization: xhigh and max are
-# distinct selections in /model — both names appear in the same transcript
-# when the user toggles between them — so conflating them lies to the user.
+# Display the effort tier truthfully — whatever .effort.level reports
+# (low, medium, high, xhigh, max, ultra). No normalization: xhigh and max are
+# distinct tiers, so conflating them would lie about the active setting.
 # Uppercased via tr (bash 3.2 on macOS lacks ${var^^}).
 effort_display=$(printf '%s' "$effort_level" | tr '[:lower:]' '[:upper:]')
+[ "$effort_display" = "NULL" ] && effort_display=""
 [ -n "$effort_display" ] && effort_colored="${c_bold}${effort_display}${c_reset}${c_dim}" || effort_colored=""
 
-# Build tier suffix: (1M | MAX), (200K), (MAX), or empty
+# Build tier suffix: (1M|XHIGH), (1M|MAX), (1M|MAX|FAST), (200K), or empty.
+# Order: context | effort tier | fast-mode marker. Fast mode (/fast) is a
+# separate speed axis from effort — shown only when active so it adds no
+# clutter when off. Not bold (per pref: bold is reserved for the effort tier).
 tier_inner=""
 [ "$context_size" -gt 0 ] 2>/dev/null && tier_inner="$(format_context "$context_size")"
-if [ -n "$effort_display" ] && [ "$effort_display" != "null" ]; then
+if [ -n "$effort_display" ]; then
   [ -n "$tier_inner" ] && tier_inner="${tier_inner}|${effort_colored}" || tier_inner="${effort_colored}"
+fi
+if [ "$fast_mode" = "true" ]; then
+  fast_marker="${c_orange}FAST${c_reset}${c_dim}"
+  [ -n "$tier_inner" ] && tier_inner="${tier_inner}|${fast_marker}" || tier_inner="${fast_marker}"
 fi
 ctx_tier=""
 [ -n "$tier_inner" ] && ctx_tier=" ${c_dim}(${tier_inner})${c_reset}"
