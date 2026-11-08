@@ -1,124 +1,139 @@
 # claude-code-statusline
 
-Personal Claude Code statusline — single-row, tight separators, muted 256-color palette.
-
-## Format
-
-```
-[plan-icon ⚡] [project]│[git branch + dirty/ahead/behind]│tokens/ctx│5h pct% (reset)/7d pct% (reset)/F pct%│Model (ctx|EFFORT[|FAST])│[output-style]
-```
-
-Example:
+A status line for Claude Code, written in Rust. It is a single small binary
+for macOS, Linux and Windows, renders in about 3 ms, and shows only what
+Claude Code itself reports.
 
 ```
-ductran│170k/1M│5h 37% (1h25m)/7d 28% (Mon 1AM)/F 39%│Fable 5 (1M|MAX)
+proj│main ✓ ↑1│92k/1M│5h 28% (2h36m)/7d 71% (Sun 2AM)/F 12%│Opus 5.5 (1M|MAX|FAST)│Concise
 ```
 
-With fast mode on: `Fable 5 (1M|MAX|FAST)` — the `FAST` marker is appended only when active.
-
-## Separators
-
-- `│` between segments — no surrounding spaces
-- `/` between the rate buckets (5h, 7d, per-model) — no surrounding spaces
-- `|` inside `(ctx|EFFORT)` — no surrounding spaces
-- Inner spaces kept for readability: `5h 10%`, `branch ✓`, `(1M|MAX)`
-
-## Model names
-
-`.model.display_name` from the statusLine stdin is preferred (`Fable 5`,
-`Opus 4.8`, `Haiku 4.5`) — zero maintenance as new families ship; a leading
-`Claude ` is stripped to stay tight. Builds without `display_name` fall back
-to parsing `.model.id`: family from the slug (fable/opus/sonnet/haiku),
-version from the first `X-Y` digit pair (`4-8` → 4.8, legacy
-`claude-3-7-sonnet` → 3.7) or a lone trailing digit group
-(`claude-fable-5` / `claude-opus-5` → 5). Settings-style ids carrying a
-context suffix (`claude-fable-5[1m]`) have it stripped before parsing.
-
-## Color thresholds
-
-- Tokens: green ≤30 / yellow ≤60 / orange ≤80 / red >80 (applied to `tokens/ctx`)
-- Rate limits: green ≤50 / yellow ≤75 / orange ≤90 / red >90
-
-Rate percentages are **rounded**, not ceiled — the API emits float artifacts
-(`28.000000000000004`) that ceil inflated to 29% while `/usage` said 28%.
-The token count is the exact `context_window.current_usage` sum (input +
-output + cache) when the build provides it, else derived from size × used%.
-
-## Palette
-
-Muted 256-color: sage 108, gold 179, terra cotta 173, brick 167, slate 103, mauve 139, rose 181, warm gray 245, white-dim 250.
-
-Bold reserved for the effort tier label (MAX/ULTRA/XHIGH/etc.).
-
-## Effort tier & fast mode
-
-The active effort tier is read straight from the statusLine stdin JSON `.effort.level`
-(Claude Code ≥ ~2.1.154). It is **live** — reflects mid-session `/effort` and `/model`
-toggles in real time — and covers `low | medium | high | xhigh | max`, plus
-**`ultra`** when ultracode is on. The raw value is uppercased and rendered bold,
-in a per-tier color that heats up as the tier climbs:
-
-| tier | color |
+| Segment | Source |
 |---|---|
-| LOW | warm gray 245 |
-| MEDIUM | white-dim 250 |
-| HIGH | sage 108 |
-| XHIGH | gold 179 |
-| MAX | brick 167 |
-| ULTRA | mauve 139 |
+| `proj` | folder name of `workspace.project_dir` |
+| `main ✓ ↑1 ↓2` | one `git status --porcelain=v2 --branch`; `✗` when the tree has changes |
+| `92k/1M` | context in use and window size, counted as Claude Code counts it |
+| `5h 28% (2h36m)` | `rate_limits.five_hour`, with the time left until reset |
+| `7d 71% (Sun 2AM)` | `rate_limits.seven_day`; past a day the reset shows as local day and hour |
+| `F 12%` | per-model weekly bucket (the Fable row of `/usage`), from claude-swap |
+| `Opus 5.5` | `model.display_name`, or a label parsed from `model.id` |
+| `(1M\|MAX\|FAST)` | context window, effort tier, fast mode |
+| `Concise` | output style, hidden when it is the default |
 
-Unknown future tiers render bold-uncolored. Terra cotta is reserved for the
-`FAST` marker so the two axes never blur.
+Segments without data are left out. Before the first reply of a session
+there are no rate limits yet, and models without an effort setting show no
+tier.
 
-Fallback (only when `.effort.level` is absent — older builds, or models without an
-effort parameter): `~/.claude/settings.json` → `.effortLevel`. Note that `settings.json`
-cannot store `max` or `ultra` (session-only), so reading `.effort.level` is what makes
-a live **MAX**/**ULTRA** show up at all.
+## Effort tier
 
-**Fast mode** (`/fast`) is a separate speed axis, read live from the top-level
-`.fast_mode` boolean. When active, a non-bold terra-cotta `FAST` marker is appended:
-`(1M|MAX|FAST)`. Nothing is shown when fast mode is off.
+The tier is `effort.level` from the JSON that Claude Code sends to the
+status line. Claude Code fills it with the effort it will send on the next
+request: one of `low`, `medium`, `high`, `xhigh` or `max`, already lowered
+to what the model supports (for example `max` becomes `high` on a model
+without max effort). It follows `/effort`, `/model` and `--effort` at once.
 
-## Per-model weekly % (via claude-swap)
+Two things the earlier shell version did wrong are gone:
 
-The statusLine stdin only carries the account-wide 5h/7d numbers. The
-per-model weekly buckets — the "Fable 5" row in `/usage` — come from
-[claude-swap](https://github.com/realiti4/claude-swap)'s last-good local data
-(`cswap list --json`), which [AI smartbar](https://github.com/ductran27/AI_smartbar)
-keeps fresh wherever its tray is polling. Each bucket of the **active**
-account renders as a single-letter label after 7d: `F 39%` (Fable → F,
-colored by the rate thresholds).
+- When `effort` was missing it fell back to `effortLevel` in settings.json
+  and showed, say, `XHIGH` for a model that takes no effort at all. Now no
+  tier is shown, because none is sent.
+- It had an `ULTRA` tier. Claude Code never reports one: ultracode is a
+  workflow mode that runs on top of an ordinary effort level
+  (`/effort ultracode` sets `xhigh`), so the tier shown is that level.
 
-- Renders never block: they read `~/.cache/claude-statusline/cswap.json`; a
-  background refresh runs at most once per 90 s (`SCOPED_TTL`). Only the
-  first-ever render (no cache yet) refreshes synchronously (~0.4 s).
-- The bucket's reset time is shown only when it deviates >1 h from the 7d
-  reset — they normally tick together, so repeating the timestamp is noise.
-- No `cswap` on the machine → the segment simply never appears.
-- `STATUSLINE_SCOPED=off` disables it; `SMARTBAR_CSWAP=/path/to/cswap`
-  pins the binary (same variable AI smartbar honors).
+Per turn effort that a keyword adds to a single prompt is not part of the
+status line JSON and is not shown.
 
-The stdin 5h/7d are per-render live; the cswap snapshot refreshes on the
-smartbar's cadence — the two can briefly disagree by a point or two.
+Tier colors, all bold: LOW gray, MEDIUM light gray, HIGH sage, XHIGH gold,
+MAX brick. FAST is terra cotta and not bold.
+
+## Per-model weekly bucket
+
+The status line JSON carries only the account wide 5h and 7d windows. The
+per-model weekly buckets come from
+[claude-swap](https://github.com/realiti4/claude-swap), which keeps the last
+reading of every managed account in `cache/usage.json`
+(`~/.claude-swap-backup` on macOS and Windows, `~/.local/share/claude-swap`
+on Linux). The binary reads that file directly, so a render never starts
+Python or touches the network.
+
+The row shown is the one whose 7d reset matches the 7d reset in the status
+line JSON, which is this session's own account even when claude-swap has
+switched the active account since the session started. Without rate limits
+in the JSON, the account logged in to Claude Code is used. A bucket whose
+reset time has passed is hidden rather than shown with an old number. When
+the matching reading is more than 10 minutes old, `cswap status --json` is
+started in the background, at most once every 5 minutes, so the next render
+has fresh data. Without claude-swap the segment does not appear.
+
+## Speed
+
+Measured on an M-series Mac, from spawn to exit:
+
+| | per render |
+|---|---|
+| earlier shell version | 127 ms |
+| this binary | 3 to 5 ms |
+| process spawn alone | 1.7 ms |
+
+The git result is cached per repository for 5 seconds and dropped as soon
+as git rewrites the index, HEAD or refs, so commits, staging and branch
+switches show at once and edits show within 5 seconds. Git runs with
+`--no-optional-locks`, so it never competes with your own git commands for
+the index lock. A repository where git hangs (network drive, huge untracked
+tree) is given 1.5 s, then the branch is read from HEAD and git is not tried
+again for a minute.
 
 ## Install
 
-1. Copy the script:
+With Rust installed (https://rustup.rs), from a clone:
 
-   ```sh
-   cp statusline-cool.sh ~/.claude/statusline-cool.sh
-   chmod +x ~/.claude/statusline-cool.sh
-   ```
+```sh
+./install.sh          # macOS, Linux, Git Bash on Windows
+```
 
-2. Wire it up in `~/.claude/settings.json`:
+```powershell
+.\install.ps1         # Windows PowerShell
+```
 
-   ```json
-   {
-     "statusLine": {
-       "type": "command",
-       "command": "~/.claude/statusline-cool.sh"
-     }
-   }
-   ```
+Without Rust, the same scripts download the latest release binary. Both put
+the binary in `~/.claude/bin` and print the settings block to add to
+`~/.claude/settings.json`:
 
-3. Restart Claude Code.
+```json
+"statusLine": {
+  "type": "command",
+  "command": "~/.claude/bin/claude-statusline",
+  "refreshInterval": 60
+}
+```
+
+On Windows use the full path the installer prints, for example
+`C:/Users/you/.claude/bin/claude-statusline.exe`. `refreshInterval` keeps
+the reset countdowns current while the session is idle; it costs one 3 ms
+run a minute.
+
+## Options
+
+Environment variables, set where Claude Code is started:
+
+| Variable | Effect |
+|---|---|
+| `STATUSLINE_GIT=off` | no git segment |
+| `STATUSLINE_SCOPED=off` | no per-model bucket |
+| `SMARTBAR_CSWAP=/path/to/cswap` | cswap used for background refreshes |
+| `STATUSLINE_CSWAP_USAGE=/path/usage.json` | claude-swap usage file to read |
+
+Small cache files live in `~/.cache/claude-statusline` (`%LOCALAPPDATA%`
+on Windows).
+
+## Development
+
+```sh
+cargo test --release      # unit tests and end-to-end runs of the binary
+cargo clippy --all-targets -- -D warnings
+```
+
+CI runs both on macOS, Linux and Windows. Pushing a `v*` tag builds release
+binaries for macOS (arm64, x86_64), Linux (static musl, x86_64 and arm64)
+and Windows (x86_64).

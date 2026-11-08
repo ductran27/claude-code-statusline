@@ -1,0 +1,25 @@
+[package]
+name = "claude-statusline"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A fast, accurate status line for Claude Code"
+repository = "https://github.com/ductran27/claude-code-statusline"
+readme = "README.md"
+
+[[bin]]
+name = "claude-statusline"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
