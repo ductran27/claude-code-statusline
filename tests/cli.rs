@@ -31,6 +31,10 @@ impl Drop for Home {
 }
 
 fn run(home: &Path, payload: &str) -> String {
+    run_with(home, payload, &[])
+}
+
+fn run_with(home: &Path, payload: &str, envs: &[(&str, &str)]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_claude-statusline"))
         .env_clear()
         // Windows needs SystemRoot to start a process normally.
@@ -41,6 +45,7 @@ fn run(home: &Path, payload: &str) -> String {
         .env("STATUSLINE_NOW", NOW.to_string())
         .env("STATUSLINE_GIT", "off")
         .env("TZ", "UTC0")
+        .envs(envs.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -283,4 +288,155 @@ fn every_effort_tier_round_trips() {
             "{lvl}: {out}"
         );
     }
+}
+
+fn prompt(id: &str, text: &str) -> String {
+    format!(
+        r#"{{"parentUuid":null,"isSidechain":false,"promptId":"{id}","type":"user","message":{{"role":"user","content":"{text}"}},"uuid":"u-{id}","promptSource":"typed"}}"#
+    )
+}
+
+fn attach(kind: &str) -> String {
+    format!(
+        r#"{{"parentUuid":"u","isSidechain":false,"attachment":{{"type":"{kind}"}},"type":"attachment","uuid":"a"}}"#
+    )
+}
+
+/// A transcript under the real temp directory, below a folder whose name
+/// holds a backslash, so the path in the payload needs JSON escaping on
+/// every platform (on Windows the temp path itself is full of them).
+fn transcript(h: &Home, lines: &[String]) -> PathBuf {
+    let p = h.0.join("pro\\ject").join("s.jsonl");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    append(&p, lines);
+    p
+}
+
+fn append(p: &Path, lines: &[String]) {
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(p).unwrap();
+    for l in lines {
+        writeln!(f, "{l}").unwrap();
+    }
+}
+
+fn session(transcript: &Path, prompt_id: &str) -> String {
+    let path = serde_json::to_string(transcript.to_str().unwrap()).unwrap();
+    format!(r#", "transcript_path": {path}, "prompt_id": "{prompt_id}""#)
+}
+
+fn ultra_cache_files(dir: &Path) -> usize {
+    fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .map(|e| {
+                let p = e.path();
+                if p.is_dir() {
+                    ultra_cache_files(&p)
+                } else {
+                    usize::from(e.file_name().to_string_lossy().starts_with("ultra-"))
+                }
+            })
+            .sum()
+    })
+}
+
+const XHIGH: &str = r#""effort": {"level": "xhigh"},"#;
+
+#[test]
+fn ultracode_session_shows_bold_mauve_ultra() {
+    let h = Home::new("ultra");
+    let t = transcript(&h, &[prompt("p1", "go"), attach("ultra_effort_enter")]);
+    let out = run(&h.0, &payload(XHIGH, &session(&t, "p1")));
+    assert_eq!(plain(&out), "proj│92k/1M│Opus 5.5 (1M|XHIGH|ULTRA)│Concise");
+    assert!(
+        out.contains("\x1b[1m\x1b[38;5;139mULTRA"),
+        "ULTRA is bold mauve: {out:?}"
+    );
+    assert_eq!(ultra_cache_files(&h.0), 1);
+
+    let fast = payload(XHIGH, &session(&t, "p1")).replace(r#""fast_mode": false"#, r#""fast_mode": true"#);
+    assert!(plain(&run(&h.0, &fast)).ends_with("Opus 5.5 (1M|XHIGH|ULTRA|FAST)│Concise"));
+
+    // The next prompt records that ultracode is off; the cached scan picks it up.
+    append(&t, &[prompt("p2", "plain"), attach("ultra_effort_exit")]);
+    let out = plain(&run(&h.0, &payload(XHIGH, &session(&t, "p2"))));
+    assert!(out.ends_with("Opus 5.5 (1M|XHIGH)│Concise"), "{out}");
+}
+
+#[test]
+fn ultracode_stays_when_the_effort_moves() {
+    let h = Home::new("ultramove");
+    let t = transcript(&h, &[prompt("p1", "go"), attach("ultra_effort_enter")]);
+    let at = |lvl: &str, model: &str| {
+        plain(&run(
+            &h.0,
+            &payload(&format!(r#""effort": {{"level": "{lvl}"}},"#), &session(&t, "p1"))
+                .replace("claude-opus-5-5", model),
+        ))
+    };
+    assert!(at("xhigh", "claude-opus-5-5").ends_with("(1M|XHIGH|ULTRA)│Concise"));
+    // A plain level keeps ultracode on in Claude Code.
+    append(
+        &t,
+        &[r#"{"type":"system","subtype":"local_command","isSidechain":false,"content":"<local-command-stdout>Set effort level to high (this session only): Comprehensive implementation with extensive testing</local-command-stdout>"}"#.to_string()],
+    );
+    assert!(at("high", "claude-opus-5-5").ends_with("(1M|HIGH|ULTRA)│Concise"));
+    // A model without xhigh effort does not run it.
+    assert!(at("high", "claude-sonnet-4-6").ends_with("(1M|HIGH)│Concise"));
+    assert!(at("high", "claude-opus-5-5").ends_with("(1M|HIGH|ULTRA)│Concise"));
+}
+
+#[test]
+fn keyword_turn_shows_plain_mauve_ultra() {
+    let h = Home::new("keyword");
+    let t = transcript(
+        &h,
+        &[
+            prompt("p1", "can ultracode em nhe"),
+            attach("workflow_keyword_request"),
+        ],
+    );
+    let high = r#""effort": {"level": "high"},"#;
+    let out = run(&h.0, &payload(high, &session(&t, "p1")));
+    assert!(
+        plain(&out).ends_with("Opus 5.5 (1M|HIGH|ultra)│Concise"),
+        "{out:?}"
+    );
+    assert!(
+        out.contains("|\x1b[38;5;139multra\x1b[0m"),
+        "ultra is mauve, not bold: {out:?}"
+    );
+    // A new prompt id in the payload ends the keyword turn.
+    let out = plain(&run(&h.0, &payload(high, &session(&t, "p2"))));
+    assert!(out.ends_with("Opus 5.5 (1M|HIGH)│Concise"), "{out}");
+    // No prompt id: no prompt of this process, as after a resume.
+    let path = serde_json::to_string(t.to_str().unwrap()).unwrap();
+    let out = plain(&run(
+        &h.0,
+        &payload(high, &format!(r#", "transcript_path": {path}"#)),
+    ));
+    assert!(out.ends_with("Opus 5.5 (1M|HIGH)│Concise"), "{out}");
+}
+
+#[test]
+fn no_effort_means_no_ultra() {
+    let h = Home::new("ultranoeffort");
+    let t = transcript(&h, &[prompt("p1", "go"), attach("ultra_effort_enter")]);
+    let out = plain(&run(&h.0, &payload("", &session(&t, "p1"))));
+    assert_eq!(out, "proj│92k/1M│Opus 5.5 (1M)│Concise");
+    assert_eq!(ultra_cache_files(&h.0), 0, "the transcript is not read");
+}
+
+#[test]
+fn ultra_off_skips_the_transcript() {
+    let h = Home::new("ultraoff");
+    let t = transcript(&h, &[prompt("p1", "go"), attach("ultra_effort_enter")]);
+    for v in ["off", "0", "OFF"] {
+        let out = plain(&run_with(
+            &h.0,
+            &payload(XHIGH, &session(&t, "p1")),
+            &[("STATUSLINE_ULTRA", v)],
+        ));
+        assert!(out.ends_with("Opus 5.5 (1M|XHIGH)│Concise"), "{v}: {out}");
+    }
+    assert_eq!(ultra_cache_files(&h.0), 0, "no transcript read, no cache file");
 }

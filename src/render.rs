@@ -1,12 +1,12 @@
 //! Build the status line from Claude Code's stdin JSON.
 //!
-//! Layout: `project│branch ✓│tokens/ctx│5h N% (reset)/7d N% (reset)/F N%│Model (ctx|EFFORT|FAST)│style`
+//! Layout: `project│branch ✓│tokens/ctx│5h N% (reset)/7d N% (reset)/F N%│Model (ctx|EFFORT|ULTRA|FAST)│style`
 
 use crate::color::{
     by_pct, BOLD, DIM, GRAY, GREEN, MAUVE, ORANGE, RATE_THRESH, RED, RESET, ROSE, SEP, SLATE, TOKEN_THRESH,
     WHITE_DIM, YELLOW,
 };
-use crate::{git, scoped, time};
+use crate::{git, scoped, time, ultra};
 use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,7 @@ pub struct Ctx {
     pub cache_dir: Option<PathBuf>,
     pub git: bool,
     pub scoped: bool,
+    pub ultra: bool,
 }
 
 fn str_at<'a>(v: &'a Value, ptr: &str) -> Option<&'a str> {
@@ -245,6 +246,21 @@ pub fn render(v: &Value, cx: &Ctx) -> String {
     }
     if let Some((lvl, c)) = effort(v) {
         inner.push(format!("{BOLD}{c}{lvl}{RESET}{DIM}"));
+        // Only models with an effort setting can run ultracode.
+        let mark = match (cx.ultra, str_at(v, "/transcript_path"), cx.cache_dir.as_deref()) {
+            (true, Some(t), Some(cache)) => ultra::mark(
+                Path::new(t),
+                cache,
+                str_at(v, "/model/id").unwrap_or(""),
+                str_at(v, "/prompt_id"),
+            ),
+            _ => None,
+        };
+        match mark {
+            Some(ultra::Mark::Session) => inner.push(format!("{BOLD}{MAUVE}ULTRA{RESET}{DIM}")),
+            Some(ultra::Mark::Turn) => inner.push(format!("{MAUVE}ultra{RESET}{DIM}")),
+            None => {}
+        }
     }
     if v.pointer("/fast_mode").and_then(Value::as_bool) == Some(true) {
         inner.push(format!("{ORANGE}FAST{RESET}{DIM}"));
@@ -298,6 +314,7 @@ mod tests {
             cache_dir: None,
             git: false,
             scoped: false,
+            ultra: false,
         }
     }
 

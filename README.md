@@ -17,7 +17,7 @@ proj│main ✓ ↑1│92k/1M│5h 28% (2h36m)/7d 71% (Sun 2AM)/F 12%│Opus 5.5
 | `7d 71% (Sun 2AM)` | `rate_limits.seven_day`; past a day the reset shows as local day and hour |
 | `F 12%` | per-model weekly bucket (the Fable row of `/usage`), from claude-swap |
 | `Opus 5.5` | `model.display_name`, or a label parsed from `model.id` |
-| `(1M\|MAX\|FAST)` | context window, effort tier, fast mode |
+| `(1M\|MAX\|ULTRA\|FAST)` | context window, effort tier, ultracode, fast mode |
 | `Concise` | output style, hidden when it is the default |
 
 Segments without data are left out. Before the first reply of a session
@@ -32,20 +32,70 @@ request: one of `low`, `medium`, `high`, `xhigh` or `max`, already lowered
 to what the model supports (for example `max` becomes `high` on a model
 without max effort). It follows `/effort`, `/model` and `--effort` at once.
 
-Two things the earlier shell version did wrong are gone:
-
-- When `effort` was missing it fell back to `effortLevel` in settings.json
-  and showed, say, `XHIGH` for a model that takes no effort at all. Now no
-  tier is shown, because none is sent.
-- It had an `ULTRA` tier. Claude Code never reports one: ultracode is a
-  workflow mode that runs on top of an ordinary effort level
-  (`/effort ultracode` sets `xhigh`), so the tier shown is that level.
-
-Per turn effort that a keyword adds to a single prompt is not part of the
-status line JSON and is not shown.
+When `effort` is missing no tier is shown, because none is sent. The
+earlier shell version fell back to `effortLevel` in settings.json and
+showed, say, `XHIGH` for a model that takes no effort at all.
 
 Tier colors, all bold: LOW gray, MEDIUM light gray, HIGH sage, XHIGH gold,
 MAX brick. FAST is terra cotta and not bold.
+
+### Ultracode
+
+Ultracode is not an effort tier. It is a workflow mode that runs on top of
+an ordinary level (`/effort ultracode` keeps the current level and
+`--effort ultracode` starts at `xhigh`), so the tier shown is that level
+and ultracode has its own marker after it:
+
+- `ULTRA`, bold mauve, when ultracode is on for the session, as in
+  `Opus 5.5 (1M|XHIGH|ULTRA)`.
+- `ultra`, mauve and not bold, when only the current prompt asked for it
+  with the word `ultracode`.
+- Nothing otherwise, and never for a model without an effort setting,
+  since such a model cannot run ultracode.
+
+The status line JSON has no ultracode field, so the marker comes from the
+session transcript (`transcript_path`). Claude Code records there whether a
+prompt starts with ultracode on or off, the output of `/effort` (turning
+ultracode on or off, the result of the effort picker, which ends in
+`· Ultracode on` or `· Ultracode off` when ultracode changed with the
+level, and the `/effort status` report), and the keyword request of a
+prompt that names ultracode. Only these records count, matched by record
+type and field. Tool output, hook output and summaries that quote the same
+words are ignored, and so are the records of subagents.
+
+Setting a plain level with `/effort <level>`, the picker or the effort
+keys keeps ultracode on, so `ULTRA` stays. On a model without `xhigh`
+effort, such as Opus 4.6 or Sonnet 4.6, Claude Code does not run
+ultracode, so `ULTRA` is hidden there and shows again when the session
+switches back.
+
+Each render reads only the lines added since the last one, and the
+position and the state are kept in a small cache file per transcript, so a
+render with nothing new stays at 3 to 5 ms. The first render of a long
+session reads the whole transcript once, which takes a few tenths of a
+second for a 540 MB transcript. It saves its progress every 64 MB, so if
+Claude Code stops that render early, the next one goes on from there. A transcript that was shortened or
+rewritten is read again from the start. When the cache folder cannot be
+written, the marker is not shown, since every render would then read the
+whole transcript.
+
+Known limits:
+
+- After `claude --resume` the marker may lag until the next prompt, which
+  records whether ultracode is still on.
+- A session started with `--effort ultracode` or `"ultracode": true` in
+  its settings is on from the start, but nothing is written before the
+  first prompt, so `ULTRA` appears with that prompt.
+- An effort change sent over Remote Control or through the SDK flag
+  settings turns ultracode off without a record, so `ULTRA` stays until
+  the next prompt records that it is off.
+- A prompt on a model without ultracode records that it is off. Back on a
+  model that runs it, ultracode is on again, but `ULTRA` returns only with
+  the next prompt.
+- The keyword marker follows `prompt_id` in the status line JSON, so it
+  clears as soon as a new prompt or task notification starts. Before the
+  first prompt of a process, as after a resume, there is no `prompt_id`
+  and no keyword marker.
 
 ## Per-model weekly bucket
 
@@ -121,11 +171,13 @@ Environment variables, set where Claude Code is started:
 |---|---|
 | `STATUSLINE_GIT=off` | no git segment |
 | `STATUSLINE_SCOPED=off` | no per-model bucket |
+| `STATUSLINE_ULTRA=off` | no ultracode marker, and the transcript is not read |
 | `SMARTBAR_CSWAP=/path/to/cswap` | cswap used for background refreshes |
 | `STATUSLINE_CSWAP_USAGE=/path/usage.json` | claude-swap usage file to read |
 
 Small cache files live in `~/.cache/claude-statusline` (`%LOCALAPPDATA%`
-on Windows).
+on Windows). Ultracode cache files untouched for a week are removed when a
+new one is made; a file still in use is rewritten once a day, so it stays.
 
 ## Development
 

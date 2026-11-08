@@ -68,9 +68,9 @@ fn stamp(gitdir: &Path) -> String {
     )
 }
 
-/// FNV-1a, for a stable cache file name per repository.
-fn fnv(s: &str) -> u64 {
-    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+/// FNV-1a, for stable cache file names.
+pub fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
 }
@@ -121,7 +121,7 @@ pub fn status(dir: &Path, cache_dir: Option<&Path>, now: i64) -> Option<Git> {
     let root = find_root(dir)?;
     let gitdir = git_dir(&root)?;
     let key = stamp(&gitdir);
-    let file = cache_dir.map(|c| c.join(format!("git-{:016x}", fnv(&root.to_string_lossy()))));
+    let file = cache_dir.map(|c| c.join(format!("git-{:016x}", fnv(root.to_string_lossy().as_bytes()))));
     if let Some((k, at, slow, g)) = file
         .as_ref()
         .and_then(|f| fs::read_to_string(f).ok())

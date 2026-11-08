@@ -5,6 +5,7 @@
 //!
 //! - `STATUSLINE_GIT=off`      skip the git segment
 //! - `STATUSLINE_SCOPED=off`   skip the per-model weekly buckets (cswap)
+//! - `STATUSLINE_ULTRA=off`    skip the ultracode marker and the transcript read
 //! - `SMARTBAR_CSWAP=<path>`   cswap binary used for background refreshes
 //! - `STATUSLINE_CSWAP_USAGE=<path>`  cswap `usage.json` to read
 
@@ -13,6 +14,7 @@ mod git;
 mod render;
 mod scoped;
 mod time;
+mod ultra;
 
 use std::env;
 use std::io::{Read, Write};
@@ -65,6 +67,7 @@ fn main() {
         home,
         git: on("STATUSLINE_GIT"),
         scoped: on("STATUSLINE_SCOPED"),
+        ultra: on("STATUSLINE_ULTRA"),
     };
     let line = render::render(&payload, &cx);
     let mut out = std::io::stdout().lock();

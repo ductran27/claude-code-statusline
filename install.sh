@@ -1,8 +1,9 @@
 #!/bin/sh
 # Install claude-statusline into ~/.claude/bin (macOS, Linux, Git Bash on Windows).
 # Builds from this checkout when cargo is available, otherwise downloads the
-# latest release binary. The old binary is replaced by rename, so Claude Code
-# sessions that are running it keep working.
+# latest release binary (CLAUDE_STATUSLINE_DOWNLOAD=1 forces the download).
+# The old binary is replaced by rename, so Claude Code sessions that are
+# running it keep working.
 set -eu
 
 repo_dir=$(cd "$(dirname "$0")" && pwd)
@@ -19,7 +20,7 @@ esac
 cargo_bin=$(command -v cargo 2>/dev/null || true)
 [ -n "$cargo_bin" ] || { [ -x "$HOME/.cargo/bin/cargo" ] && cargo_bin="$HOME/.cargo/bin/cargo"; } || true
 
-if [ -n "$cargo_bin" ] && [ -f "$repo_dir/Cargo.toml" ]; then
+if [ -n "$cargo_bin" ] && [ -f "$repo_dir/Cargo.toml" ] && [ "${CLAUDE_STATUSLINE_DOWNLOAD:-}" != 1 ]; then
   echo "Building with $cargo_bin"
   "$cargo_bin" build --release --locked --manifest-path "$repo_dir/Cargo.toml"
   src="$repo_dir/target/release/$exe"
@@ -44,7 +45,10 @@ mkdir -p "$dest"
 tmp="$dest/.$exe.new.$$"
 cp "$src" "$tmp"
 chmod 755 "$tmp"
+# Windows cannot overwrite a running .exe but can rename it.
+case "$exe" in *.exe) [ ! -e "$dest/$exe" ] || mv -f "$dest/$exe" "$dest/$exe.old.$$" ;; esac
 mv -f "$tmp" "$dest/$exe"
+rm -f "$dest/$exe".old.* 2>/dev/null || true
 case "$src" in "${TMPDIR:-/tmp}"/claude-statusline.*) rm -f "$src" ;; esac
 
 # Leftovers of the earlier shell version.

@@ -7,6 +7,7 @@ name = "claude-statusline"
 version = "2.0.0"
 dependencies = [
  "libc",
+ "memchr",
  "serde_json",
 ]
 
